@@ -13,6 +13,15 @@
 #     MR_BUNDLE_ID      : ex. com.salim.matterrunner
 # =====================================================================
 
+# ======================================================================
+#  Cache au NIVEAU RACINE : l'éditeur Unity (3.5 Go) n'est PAS
+#  retéléchargé à chaque build une fois le premier build réussi.
+# ======================================================================
+cache:
+  cache_paths:
+    - "~/Library/Application Support/Unity/Hub/Editor"
+    - "/Applications/Unity/Hub/Editor"
+
 workflows:
   matterrunner-ios:
     name: "MatterRunner — build iOS"
@@ -20,12 +29,6 @@ workflows:
     max_build_duration: 100
 
     environment:
-      # Mise en cache de l'éditeur Unity : 3.5 Go ne sont PAS retéléchargés
-      # à chaque build une fois le premier build réussi.
-      cache:
-        cache_paths:
-          - "~/Library/Application Support/Unity/Hub/Editor"
-          - "/Applications/Unity/Hub/Editor"
       vars:
         UNITY_VERSION: "6000.3.25f1"
         XCODE_DIR: "build_xcode"
