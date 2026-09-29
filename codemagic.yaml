@@ -34,17 +34,120 @@ workflows:
       - name: "Installer Unity $UNITY_VERSION (module iOS)"
         script: |
           set -e
-          HUB="/Applications/Unity/Hub/Editor/UnityHub.app/Contents/MacOS/UnityHub"
-          if [ ! -d "$UNITY_INSTALL_PATH" ]; then
+
+          # --- Plan B : téléchargement DIRECT des tarballs officiels Unity
+          #     (au cas où Unity Hub refuse de coopérer) -------------------
+          install_direct() {
+            echo "== Plan B : téléchargement direct de Unity $UNITY_VERSION =="
+            curl -sL "https://public-cdn.cloud.unity3d.com/hub/prod/releases-darwin.json" \
+              -o /tmp/releases.json
+            python3 - "$UNITY_VERSION" > /tmp/urls.txt <<'PY'
+          import json, sys
+          ver = sys.argv[1]
+          data = json.load(open('/tmp/releases.json'))
+
+          ed_url = io_url = None
+          def walk(o):
+              global ed_url, io_url
+              if isinstance(o, dict):
+                  # la version cherchée peut être une CLÉ (official: {"6000.x.x": {...}})
+                  if ver in o:
+                      e = o[ver]
+                      if isinstance(e, dict):
+                          if not ed_url and e.get('downloadUrl'):
+                              ed_url = e['downloadUrl']
+                          for m in e.get('modules') or []:
+                              name = str(m.get('name') or m.get('id') or '').lower()
+                              if name == 'ios' and m.get('downloadUrl'):
+                                  io_url = m['downloadUrl']
+                  for v in o.values():
+                      walk(v)
+              elif isinstance(o, list):
+                  for v in o:
+                      walk(v)
+
+          walk(data)
+          print(ed_url or '')
+          print(io_url or '')
+          PY
+            ED_URL=$(sed -n '1p' /tmp/urls.txt)
+            IOS_URL=$(sed -n '2p' /tmp/urls.txt)
+            [ -n "$ED_URL" ] || { echo "Version $UNITY_VERSION non trouvée dans releases-darwin.json"; exit 1; }
+            echo "Éditeur : $ED_URL"
+            echo "Module iOS : ${IOS_URL:-<intégré>}"
+            mkdir -p /tmp/unity_extract
+            curl -L "$ED_URL" -o /tmp/unity.tar.gz
+            tar -xzf /tmp/unity.tar.gz -C /tmp/unity_extract
+            mkdir -p "$UNITY_INSTALL_PATH"
+            # le tarball contient un dossier racine "Unity" -> il DEVIENT la version
+            if [ -d /tmp/unity_extract/Unity ]; then
+              mv /tmp/unity_extract/Unity/. "$UNITY_INSTALL_PATH/"
+            else
+              cp -R /tmp/unity_extract/. "$UNITY_INSTALL_PATH/"
+            fi
+            if [ -n "$IOS_URL" ]; then
+              curl -L "$IOS_URL" -o /tmp/ios.tar.xz
+              # le module s'applique par-dessus l'éditeur (-1 élément = "Unity/")
+              tar -xJf /tmp/ios.tar.xz -C "$UNITY_INSTALL_PATH" --strip-components=1 || \
+                tar -xJf /tmp/ios.tar.xz -C "$UNITY_INSTALL_PATH"
+            fi
+            [ -x "$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity" ] \
+              || { echo "Échec : Unity.app introuvable après extraction"; exit 1; }
+            echo "== Unity installé directement =="
+          }
+
+          # --- 1) Trouver / installer Unity Hub (nom de binaire VARIE selon
+          #        la version : "Unity Hub.app" ou "UnityHub.app") ----------
+          HUB=""
+          for CANDIDATE in \
+              "/Applications/Unity Hub.app/Contents/MacOS/Unity Hub" \
+              "/Applications/UnityHub.app/Contents/MacOS/UnityHub"; do
+            if [ -x "$CANDIDATE" ]; then HUB="$CANDIDATE"; break; fi
+          done
+          if [ -z "$HUB" ]; then
             brew install --cask unity-hub || true
-            xattr -d com.apple.quarantine /Applications/Unity/Hub/Editor/UnityHub.app 2>/dev/null || true
+            for CANDIDATE in \
+                "/Applications/Unity Hub.app/Contents/MacOS/Unity Hub" \
+                "/Applications/UnityHub.app/Contents/MacOS/UnityHub"; do
+              if [ -x "$CANDIDATE" ]; then HUB="$CANDIDATE"; break; fi
+            done
+          fi
+          if [ -z "$HUB" ]; then
+            # le cask est absent/cassé : dmg officiel Unity extrait à la main
+            echo "Hub absent via brew -> téléchargement du dmg officiel"
+            curl -L "https://public-cdn.cloud.unity3d.com/hub/prod/UnityHubSetup.dmg" \
+              -o /tmp/UnityHubSetup.dmg
+            hdiutil attach /tmp/UnityHubSetup.dmg -nobrowse -quiet || true
+            HUBAPP=$(find /Volumes -maxdepth 2 -name "*.app" 2>/dev/null | grep -i "hub" | head -1)
+            if [ -n "$HUBAPP" ]; then
+              cp -R "$HUBAPP" /Applications/
+              hdiutil detach /Volumes/Unity* 2>/dev/null || true
+              xattr -dr com.apple.quarantine "/Applications/Unity Hub.app" \
+                2>/dev/null || \
+              xattr -dr com.apple.quarantine "/Applications/UnityHub.app" \
+                2>/dev/null || true
+              HUB="/Applications/Unity Hub.app/Contents/MacOS/Unity Hub"
+              [ -x "$HUB" ] || HUB="/Applications/UnityHub.app/Contents/MacOS/UnityHub"
+            fi
+            hdiutil detach /Volumes/Unity* 2>/dev/null || true
+          fi
+          echo "Hub détecté : ${HUB:-AUCUN}"
+
+          # --- 2) Installer l'éditeur + le module iOS ----------------------
+          if [ -d "$UNITY_INSTALL_PATH" ]; then
+            echo "Unity $UNITY_VERSION déjà installé (cache du runner)."
+          elif [ -n "$HUB" ]; then
             "$HUB" -- --headless install \
               --version "$UNITY_VERSION" \
               --change-installpath "$HOME/Library/Application Support/Unity/Hub/Editor" \
-              --module ios
+              --module ios \
+              --childModules \
+            || install_direct
           else
-            echo "Unity $UNITY_VERSION déjà installé (cache du runner)."
+            install_direct
           fi
+          [ -x "$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity" ] \
+            || { echo "Unity n'est PAS installé au bon endroit !"; ls "$UNITY_INSTALL_PATH" 2>/dev/null; exit 1; }
           echo "$UNITY_VERSION" > "$CM_BUILD_DIR/.unity-version"
 
       # --------------------------------------------------------------
