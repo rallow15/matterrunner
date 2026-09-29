@@ -1,17 +1,17 @@
 # =====================================================================
 #  codemagic.yaml — MatterRunner : build iOS SIMPLIFIÉ (sans Unity)
 #
-#  NOUVELLE STRATÉGIE (octobre 2026) :
+#  STRATÉGIE :
 #    - le PROJET XCODE (build_xcode/) est généré PAR TON UNITY WINDOWS
 #      (ton PC a déjà la licence Personal) puis poussé sur GitHub ;
 #    - les Mac de Codemagic ne font PLUS qu'UNE chose : compiler ce
-#      projet avec xcodebuild (aucun Unity, AUCUNE licence Unity) ;
+#      projet avec xcodebuild (aucun Unity, AUCUNE licence Unity).
 #    - la .ipa sort NON SIGNÉE : tu la fais signer gratuitement par
 #      ton Apple ID avec Sideloadly / AltStore sur ton PC, puis tu
 #      l'installes sur ton iPhone.
 #
 #  Déclencheur : bouton "Start build" dans l'onglet Builds de Codemagic.
-#  Plus AUCUNE variable d'environnement nécessaire.
+#  Aucune variable d'environnement nécessaire.
 # =====================================================================
 
 workflows:
@@ -28,80 +28,103 @@ workflows:
 
     scripts:
       # --------------------------------------------------------------
-      # 1) Vérifier que le projet Xcode généré par Unity est bien là.
-      #    (s'il manque, c'est le build_xcode/ du repo qui n'a pas été
-      #     poussé — rien à régler côté Mac)
+      # 1) LFS : libiPhone-lib.a (219 Mo) est stockée via Git LFS —
+      #    elle doit être "débloquée" après le clone.
+      #    On liste ensuite les schémas RÉELS du projet Xcode.
       # --------------------------------------------------------------
-      - name: "Vérifier le projet Xcode"
+      - name: "LFS + inventaire du projet Xcode"
         script: |
           set -e
-          # libiPhone-lib.a est stockée via Git LFS (>100 Mo, refusé par
-          # GitHub en Git classique) : on s'assure qu'elle est débloquée.
           git lfs install || true
           git lfs pull || true
-          ls -la "$XCODE_DIR/Libraries/" || true
-          if [ ! -d "$XCODE_DIR" ]; then
-            echo "ERREUR : le dossier $XCODE_DIR est ABSENT du repo."
-            echo "Regénère-le sur ton PC (Unity batchmode CiBuild.BuildIos)"
-            echo "puis pousse-le sur GitHub."
+          if [ ! -d "$XCODE_DIR/Unity-iPhone.xcodeproj" ]; then
+            echo "ERREUR : $XCODE_DIR/Unity-iPhone.xcodeproj est ABSENT du repo."
             exit 1
           fi
-          echo "== Contenu de $XCODE_DIR =="
-          ls "$XCODE_DIR" | head -20
-          [ -d "$XCODE_DIR/Unity-iPhone.xcodeproj" ] \
-            || { echo "ERREUR : Unity-iPhone.xcodeproj introuvable"; exit 1; }
-          # le schéma existe-t-il ? (Unity le génère normalement)
           cd "$XCODE_DIR"
+          xcodebuild -version
           xcodebuild -list || true
-          SCHEME=$(xcodebuild -list 2>/dev/null | awk '/Targets:/{f=0} /Schemes:/{f=1;next} f{print $1; exit}')
-          if [ -z "$SCHEME" ]; then SCHEME="Unity-iPhone"; fi
-          echo "Schéma retenu : $SCHEME"
-          echo "$SCHEME" > /tmp/scheme.txt
+          # on récupère TOUS les schémas (le premier de la liste n'est
+          # pas forcément celui qui produit l'app)
+          SCHEMES=$(xcodebuild -list 2>/dev/null \
+            | sed -n '/Schemes:/,$p' \
+            | grep -v 'Schemes:' \
+            | sed 's/^ *//' | grep -v '^$' || true)
+          echo "$SCHEMES" > /tmp/schemes.txt
+          echo "Schémas disponibles :"
+          cat /tmp/schemes.txt
 
       # --------------------------------------------------------------
-      # 2) xcodebuild : compile l'app pour iPhone SANS signature
-      #    (CODE_SIGNING_ALLOWED=NO — aucun certificat Apple nécessaire,
-      #     la signature sera faite sur TON PC par Sideloadly/AltStore)
+      # 2) xcodebuild SANS signature. On essaie chaque schéma jusqu'à
+      #    ce qu'un .app soit réellement produit (le schéma
+      #    UnityFramework ne sort que des bibliothèques statiques ;
+      #    l'app vient du schéma de l'app — Unity-iPhone).
       # --------------------------------------------------------------
       - name: "Compiler l'app (sans signature)"
         script: |
           set -e
           cd "$XCODE_DIR"
-          SCHEME=$(cat /tmp/scheme.txt)
-          # build "generic/platform=iOS" = appareil réel, pas le simulateur
-          xcodebuild \
-            -project Unity-iPhone.xcodeproj \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            -derivedDataPath "$CM_BUILD_DIR/derived" \
-            build || {
-            echo '=============================================='
-            echo '== xcodebuild a ÉCHOUÉ — dernières erreurs =='
-            echo '=============================================='
+          COMMON_FLAGS="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=\"\""
+          APP=""
+
+          # a) essai cible directe (le plus déterministe avec Unity :
+          #    l'app target s'appelle Unity-iPhone, le produit MatterRunner)
+          if xcodebuild \
+              -project Unity-iPhone.xcodeproj \
+              -target Unity-iPhone \
+              -configuration Release \
+              -sdk iphoneos \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              -derivedDataPath "$CM_BUILD_DIR/derived" \
+              build; then
+            APP=$(find "$CM_BUILD_DIR/derived/Build/Products" \
+              -name "*.app" -type d | head -n 1)
+            echo "Résultat de la cible directe : $APP"
+          else
+            echo "La cible directe a échoué — on essaie les schémas."
+          fi
+
+          # b) si rien : on boucle sur les schémas réels du projet
+          if [ -z "$APP" ]; then
+            for s in $(cat /tmp/schemes.txt); do
+              echo "== Build du schéma : $s =="
+              if xcodebuild \
+                  -project Unity-iPhone.xcodeproj \
+                  -scheme "$s" \
+                  -configuration Release \
+                  -destination 'generic/platform=iOS' \
+                  CODE_SIGNING_ALLOWED=NO \
+                  CODE_SIGNING_REQUIRED=NO \
+                  CODE_SIGN_IDENTITY="" \
+                  -derivedDataPath "$CM_BUILD_DIR/derived" \
+                  build; then
+                APP=$(find "$CM_BUILD_DIR/derived/Build/Products" \
+                  -name "*.app" -type d | head -n 1)
+                [ -n "$APP" ] && { echo "App trouvée : $APP"; break; }
+              fi
+            done
+          fi
+
+          if [ -z "$APP" ]; then
+            echo "ERREUR : aucun .app produit après toutes les tentatives."
+            find "$CM_BUILD_DIR/derived/Build/Products" || true
             exit 1
-          }
+          fi
+          echo "$APP" > /tmp/app.txt
 
       # --------------------------------------------------------------
-      # 3) Packager l'app non signée en .ipa (structure Payload/). C'est
-      #    ce fichier qu'on glisse dans Sideloadly.
+      # 3) Packager l'app non signée en .ipa (Payload/). C'est le
+      #    fichier à glisser dans Sideloadly.
       # --------------------------------------------------------------
       - name: "Packager en .ipa"
         script: |
           set -e
-          APP=$(find "$CM_BUILD_DIR/derived/Build/Products" -maxdepth 2 \
-            -name "*.app" -type d | head -n 1)
-          if [ -z "$APP" ]; then
-            echo "ERREUR : aucun .app produit !"
-            find "$CM_BUILD_DIR/derived/Build" -maxdepth 3 || true
-            exit 1
-          fi
+          APP=$(cat /tmp/app.txt)
           echo "App : $APP"
-          # Unity signe parfois malgré tout avec "sign to distribute
-          # locally" : on retire toute signature pour rester cohérent
+          # Unity signe parfois l'app pour "distribution locale" : on
+          # retire toute signature pour rester cohérent pour Sideloadly
           codesign --remove-signature "$APP" 2>/dev/null || true
           mkdir -p "$CM_BUILD_DIR/ipa/Payload"
           cp -R "$APP" "$CM_BUILD_DIR/ipa/Payload/"
@@ -111,7 +134,7 @@ workflows:
           ls -la "$CM_BUILD_DIR/MatterRunner-unsigned.ipa"
 
     # --------------------------------------------------------------
-    #  Ce que Codemagic rend à la fin du build :
+    #  Ce que Codemagic met à disposition en fin de build :
     # --------------------------------------------------------------
     artifacts:
       - "*.ipa"
