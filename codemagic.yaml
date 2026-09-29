@@ -1,367 +1,114 @@
 # =====================================================================
-#  codemagic.yaml — MatterRunner : build iOS ENTIEREMENT automatisé
-#  sur les Mac de Codemagic (lancable depuis Windows, rien à installer
-#  chez toi). Déclencheur : démarre le workflow depuis l'onglet Builds
-#  de Codemagic (ou chaque push si tu actives "Trigger builds").
+#  codemagic.yaml — MatterRunner : build iOS SIMPLIFIÉ (sans Unity)
 #
-#  PRÉ-REQUIS à renseigner UNE FOIS dans Codemagic → App settings →
-#  Environment variables (marquer ces variables Sécurisées) :
-#     UNITY_EMAIL     : ton email Unity ID  (chemin licence n°1)
-#     UNITY_PASSWORD  : ton mot de passe Unity ID
-#  OU si tu préfères la licence par fichier :
-#     UNITY_LICENSE_B64 : le contenu de Unity_lic.ulf encodé base64
-#     MR_BUNDLE_ID      : ex. com.salim.matterrunner
+#  NOUVELLE STRATÉGIE (octobre 2026) :
+#    - le PROJET XCODE (build_xcode/) est généré PAR TON UNITY WINDOWS
+#      (ton PC a déjà la licence Personal) puis poussé sur GitHub ;
+#    - les Mac de Codemagic ne font PLUS qu'UNE chose : compiler ce
+#      projet avec xcodebuild (aucun Unity, AUCUNE licence Unity) ;
+#    - la .ipa sort NON SIGNÉE : tu la fais signer gratuitement par
+#      ton Apple ID avec Sideloadly / AltStore sur ton PC, puis tu
+#      l'installes sur ton iPhone.
+#
+#  Déclencheur : bouton "Start build" dans l'onglet Builds de Codemagic.
+#  Plus AUCUNE variable d'environnement nécessaire.
 # =====================================================================
-
-# ======================================================================
-#  Cache au NIVEAU RACINE : l'éditeur Unity (3.5 Go) n'est PAS
-#  retéléchargé à chaque build une fois le premier build réussi.
-# ======================================================================
-cache:
-  cache_paths:
-    - "~/Library/Application Support/Unity/Hub/Editor"
-    - "/Applications/Unity/Hub/Editor"
 
 workflows:
   matterrunner-ios:
-    name: "MatterRunner — build iOS"
+    name: "MatterRunner — Xcode → IPA non signée"
     instance_type: "mac_mini_m1"
     max_build_duration: 100
 
     environment:
-      # OBLIGATOIRE en mode yaml : demander explicitement le groupe de
-      # variables créé dans l'interface Codemagic (sinon UNITY_EMAIL /
-      # UNITY_PASSWORD restent invisibles du workflow !)
       groups:
         - default
       vars:
-        UNITY_VERSION: "6000.3.25f1"
         XCODE_DIR: "build_xcode"
-        MR_BUNDLE_ID: "com.matterrunner.app"
 
     scripts:
       # --------------------------------------------------------------
-      # 1) Installer EXACTEMENT la même version de Unity que chez toi
-      #    (sinon Unity refuse d'ouvrir le projet ou migre tout).
+      # 1) Vérifier que le projet Xcode généré par Unity est bien là.
+      #    (s'il manque, c'est le build_xcode/ du repo qui n'a pas été
+      #     poussé — rien à régler côté Mac)
       # --------------------------------------------------------------
-      - name: "Installer Unity $UNITY_VERSION (module iOS)"
+      - name: "Vérifier le projet Xcode"
         script: |
           set -e
-
-          # NOTE : Unity Hub peut s'installer à l'un des DEUX emplacements
-          # (c'est varier selon la version du Hub) — on détecte le vrai :
-          UNITY_INSTALL_PATH="/Applications/Unity/Hub/Editor/$UNITY_VERSION"
-          if [ ! -d "$UNITY_INSTALL_PATH" ] && \
-             [ -d "$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION" ]; then
-            UNITY_INSTALL_PATH="$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
-          fi
-
-          # --- Plan B : téléchargement DIRECT des tarballs officiels Unity
-          #     (au cas où Unity Hub refuse de coopérer) -------------------
-          install_direct() {
-            echo "== Plan B : téléchargement direct de Unity $UNITY_VERSION =="
-            curl -sL "https://public-cdn.cloud.unity3d.com/hub/prod/releases-darwin.json" \
-              -o /tmp/releases.json
-            python3 - "$UNITY_VERSION" > /tmp/urls.txt <<'PY'
-          import json, sys
-          ver = sys.argv[1]
-          data = json.load(open('/tmp/releases.json'))
-
-          ed_url = io_url = None
-          def walk(o):
-              global ed_url, io_url
-              if isinstance(o, dict):
-                  # la version cherchée peut être une CLÉ (official: {"6000.x.x": {...}})
-                  if ver in o:
-                      e = o[ver]
-                      if isinstance(e, dict):
-                          if not ed_url and e.get('downloadUrl'):
-                              ed_url = e['downloadUrl']
-                          for m in e.get('modules') or []:
-                              name = str(m.get('name') or m.get('id') or '').lower()
-                              if name == 'ios' and m.get('downloadUrl'):
-                                  io_url = m['downloadUrl']
-                  for v in o.values():
-                      walk(v)
-              elif isinstance(o, list):
-                  for v in o:
-                      walk(v)
-
-          walk(data)
-          print(ed_url or '')
-          print(io_url or '')
-          PY
-            ED_URL=$(sed -n '1p' /tmp/urls.txt)
-            IOS_URL=$(sed -n '2p' /tmp/urls.txt)
-            [ -n "$ED_URL" ] || { echo "Version $UNITY_VERSION non trouvée dans releases-darwin.json"; exit 1; }
-            echo "Éditeur : $ED_URL"
-            echo "Module iOS : ${IOS_URL:-<intégré>}"
-            mkdir -p /tmp/unity_extract
-            curl -L "$ED_URL" -o /tmp/unity.tar.gz
-            tar -xzf /tmp/unity.tar.gz -C /tmp/unity_extract
-            mkdir -p "$UNITY_INSTALL_PATH"
-            # le tarball contient un dossier racine "Unity" -> il DEVIENT la version
-            if [ -d /tmp/unity_extract/Unity ]; then
-              mv /tmp/unity_extract/Unity/. "$UNITY_INSTALL_PATH/"
-            else
-              cp -R /tmp/unity_extract/. "$UNITY_INSTALL_PATH/"
-            fi
-            if [ -n "$IOS_URL" ]; then
-              curl -L "$IOS_URL" -o /tmp/ios.tar.xz
-              # le module s'applique par-dessus l'éditeur (-1 élément = "Unity/")
-              tar -xJf /tmp/ios.tar.xz -C "$UNITY_INSTALL_PATH" --strip-components=1 || \
-                tar -xJf /tmp/ios.tar.xz -C "$UNITY_INSTALL_PATH"
-            fi
-            [ -x "$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity" ] \
-              || { echo "Échec : Unity.app introuvable après extraction"; exit 1; }
-            echo "== Unity installé directement =="
-          }
-
-          # --- 1) Trouver / installer Unity Hub (nom de binaire VARIE selon
-          #        la version : "Unity Hub.app" ou "UnityHub.app") ----------
-          HUB=""
-          for CANDIDATE in \
-              "/Applications/Unity Hub.app/Contents/MacOS/Unity Hub" \
-              "/Applications/UnityHub.app/Contents/MacOS/UnityHub"; do
-            if [ -x "$CANDIDATE" ]; then HUB="$CANDIDATE"; break; fi
-          done
-          if [ -z "$HUB" ]; then
-            brew install --cask unity-hub || true
-            for CANDIDATE in \
-                "/Applications/Unity Hub.app/Contents/MacOS/Unity Hub" \
-                "/Applications/UnityHub.app/Contents/MacOS/UnityHub"; do
-              if [ -x "$CANDIDATE" ]; then HUB="$CANDIDATE"; break; fi
-            done
-          fi
-          if [ -z "$HUB" ]; then
-            # le cask est absent/cassé : dmg officiel Unity extrait à la main
-            echo "Hub absent via brew -> téléchargement du dmg officiel"
-            curl -L "https://public-cdn.cloud.unity3d.com/hub/prod/UnityHubSetup.dmg" \
-              -o /tmp/UnityHubSetup.dmg
-            hdiutil attach /tmp/UnityHubSetup.dmg -nobrowse -quiet || true
-            HUBAPP=$(find /Volumes -maxdepth 2 -name "*.app" 2>/dev/null | grep -i "hub" | head -1)
-            if [ -n "$HUBAPP" ]; then
-              cp -R "$HUBAPP" /Applications/
-              hdiutil detach /Volumes/Unity* 2>/dev/null || true
-              xattr -dr com.apple.quarantine "/Applications/Unity Hub.app" \
-                2>/dev/null || \
-              xattr -dr com.apple.quarantine "/Applications/UnityHub.app" \
-                2>/dev/null || true
-              HUB="/Applications/Unity Hub.app/Contents/MacOS/Unity Hub"
-              [ -x "$HUB" ] || HUB="/Applications/UnityHub.app/Contents/MacOS/UnityHub"
-            fi
-            hdiutil detach /Volumes/Unity* 2>/dev/null || true
-          fi
-          echo "Hub détecté : ${HUB:-AUCUN}"
-
-          # --- 2) Installer l'éditeur + le module iOS ----------------------
-          if [ -d "$UNITY_INSTALL_PATH" ]; then
-            echo "Unity $UNITY_VERSION déjà installé (cache du runner)."
-          elif [ -n "$HUB" ]; then
-            "$HUB" -- --headless install \
-              --version "$UNITY_VERSION" \
-              --change-installpath "$(dirname "$UNITY_INSTALL_PATH")" \
-              --module ios \
-              --childModules \
-            || install_direct
-          else
-            install_direct
-          fi
-          [ -x "$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity" ] \
-            || { echo "Unity n'est PAS installé au bon endroit !"; ls "$UNITY_INSTALL_PATH" 2>/dev/null; exit 1; }
-          echo "$UNITY_VERSION" > "$CM_BUILD_DIR/.unity-version"
-
-      # --------------------------------------------------------------
-      # 2) Activer la LICENCE Unity (Personal) sur le Mac distant.
-      #    Voie A : ulf fournie en base64 (UNITY_LICENSE_B64).
-      #    Voie B : login Unity ID (UNITY_EMAIL / UNITY_PASSWORD).
-      # --------------------------------------------------------------
-      - name: "Activer la licence Unity"
-        script: |
-          set -e
-          # détecte le binaire Unity (les 2 emplacements possibles)
-          UNITY_INSTALL_PATH="/Applications/Unity/Hub/Editor/$UNITY_VERSION"
-          if [ ! -d "$UNITY_INSTALL_PATH" ]; then
-            UNITY_INSTALL_PATH="$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
-          fi
-          UNITY_BIN="$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity"
-
-          # ---- vérification : Unity démarre-t-il avec une licence valide ? ---
-          licence_ok() {
-            "$UNITY_BIN" -quit -batchmode -nographics \
-              -projectPath "$CM_BUILD_DIR" \
-              -logFile /tmp/verif_licence.log 2>/dev/null || true
-            if grep -q "No valid Unity Editor license" /tmp/verif_licence.log; then
-              return 1
-            fi
-            return 0
-          }
-
-          # ---- VOIE 0 : ulf fournie en base64 par l'utilisateur --------------
-          if [ -n "$UNITY_LICENSE_B64" ]; then
-            echo "== Voie 0 : ulf en base64 =="
-            echo "$UNITY_LICENSE_B64" | base64 --decode > license.ulf
-            sudo mkdir -p "/Library/Application Support/Unity"
-            sudo cp license.ulf "/Library/Application Support/Unity/Unity_lic.ulf"
-            licence_ok && { echo "== Licence OK (voie 0) =="; exit 0; }
-            echo "Voie 0 : ulf REFUSÉE par l'éditeur."
-          fi
-
-          # ---- VOIE 1 : Unity Hub headless (voie OFFICIELLE du Personal) -----
-          HUB=""
-          for CANDIDATE in \
-              "/Applications/Unity Hub.app/Contents/MacOS/Unity Hub" \
-              "/Applications/UnityHub.app/Contents/MacOS/UnityHub"; do
-            if [ -x "$CANDIDATE" ]; then HUB="$CANDIDATE"; break; fi
-          done
-          if [ -n "$HUB" ] && [ -n "$UNITY_EMAIL" ]; then
-            echo "== Voie 1 : login Unity Hub headless =="
-            "$HUB" -- --headless login \
-              --username "$UNITY_EMAIL" \
-              --password "$UNITY_PASSWORD" \
-              || echo "  -> login Hub REFUSÉ (code $?), on continue"
-            licence_ok && { echo "== Licence OK (voie 1 : Hub) =="; exit 0; }
-            echo "Voie 1 : toujours pas de licence — on passe à la suivante."
-          elif [ -n "$UNITY_EMAIL" ]; then
-            echo "Voie 1 : Hub binaire introuvable — sautée."
-          fi
-
-          # ---- VOIE 2 : activation AUTOMATIQUE du site Unity (Puppeteer) -----
-          # L'éditeur génère son fichier d'activation (.alf), puis NOTRE
-          # script ci/activate_unity.js se connecte sur license.unity3d.com
-          # et récupère le .ulf tout seul (sélecteurs génériques + captures
-          # d'écran à chaque étape : ci-dessous, tout part dans les artefacts).
-          if [ -n "$UNITY_EMAIL" ]; then
-            echo "== Voie 2 : .alf + activation Puppeteer =="
-            cd /tmp
-            "$UNITY_BIN" -quit -batchmode -nographics \
-              -createManualActivationFile unity.alf || true
-            ls -la /tmp/unity.alf 2>/dev/null \
-              || echo "ATTENTION : pas de .alf généré !"
-            # on publie le .alf dans les artefacts : il permet l'activation
-            # MANUELLE du port license.unity3d.com (voire un autre PC)
-            mkdir -p "$CM_BUILD_DIR/licence"
-            cp /tmp/unity.alf "$CM_BUILD_DIR/licence/unity.alf" 2>/dev/null || true
-            # et on garde une trace du ulf obtenu (réactivation plus vite)
-            cp /tmp/lic/*.ulf "$CM_BUILD_DIR/licence/" 2>/dev/null || true
-            # Puppeteer récent : son Chromium est ARM64 natif (l'ancien outil
-            # embarquait un Chromium x64 qui refusait de se lancer sur M1).
-            if mkdir -p /tmp/lic 2>/dev/null && cd /tmp/lic; then
-              if [ ! -d node_modules/puppeteer ]; then
-                npm init -y >/dev/null 2>&1 || true
-                npm install --silent puppeteer \
-                  || echo "npm install puppeteer a échoué"
-              fi
-              cp "$CM_BUILD_DIR/ci/activate_unity.js" /tmp/lic/ || true
-              if [ -n "$UNITY_TOTP_KEY" ]; then
-                node activate_unity.js "$UNITY_EMAIL" "$UNITY_PASSWORD" \
-                  /tmp/unity.alf "$UNITY_TOTP_KEY" || true
-              else
-                node activate_unity.js "$UNITY_EMAIL" "$UNITY_PASSWORD" \
-                  /tmp/unity.alf || true
-              fi
-            fi
-            ULF=$(find /tmp -maxdepth 3 -iname '*.ulf' 2>/dev/null | head -n1)
-            if [ -n "$ULF" ]; then
-              echo "ulf obtenu : $ULF"
-              sudo mkdir -p "/Library/Application Support/Unity"
-              sudo cp "$ULF" "/Library/Application Support/Unity/Unity_lic.ulf"
-              licence_ok && { echo "== Licence OK (voie 2 : Puppeteer) =="; exit 0; }
-              echo "Voie 2 : ulf REFUSÉ par l'éditeur."
-            else
-              echo "Voie 2 : AUCUN .ulf récupéré (voir captures 01-0*.png)."
-            fi
-          else
-            echo "ERREUR : ni UNITY_LICENSE_B64 ni UNITY_EMAIL" && exit 1
-          fi
-
-          # ---- Échec complet : on affiche le pourquoi et on arrête ----------
-          # (les captures d'écran du navigateur d'activation partent aussi
-          #  dans les artefacts pour voir EXACTEMENT la page qui coince)
-          mkdir -p "$CM_BUILD_DIR/licence"
-          cp /tmp/lic/*.png /tmp/lic/*.html "$CM_BUILD_DIR/licence/" 2>/dev/null || true
-          echo '================================================='
-          echo "== AUCUNE LICENCE OBTENUE — log de vérification =="
-          echo '================================================='
-          grep -iE "licen|entitle|error|token" /tmp/verif_licence.log | tail -n 30 || true
-          exit 1
-
-      # --------------------------------------------------------------
-      # 3) Build Unity → PROJET XCODE (batchmode, sans fenêtre).
-      #    CiBuild.cs s'occupe des réglages iOS + du code de sortie.
-      # --------------------------------------------------------------
-      - name: "Unity batchmode → projet Xcode"
-        script: |
-          set -e
-          # détecte le binaire Unity (les 2 emplacements possibles)
-          UNITY_INSTALL_PATH="/Applications/Unity/Hub/Editor/$UNITY_VERSION"
-          if [ ! -d "$UNITY_INSTALL_PATH" ]; then
-            UNITY_INSTALL_PATH="$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
-          fi
-          UNITY_BIN="$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity"
-          "$UNITY_BIN" -batchmode -nographics -quit \
-            -projectPath "$CM_BUILD_DIR" \
-            -buildTarget iOS \
-            -executeMethod MatterRunner.CiBuild.BuildIos \
-            -logFile build_unity.log || {
-            echo '=============================================='
-            echo '== Unity a ÉCHOUÉ — cause dans le log : =='
-            echo '=============================================='
-            # tout ce qui ressemble à une erreur / licence / exception
-            grep -iE -B1 -A4 "error|exception|licen|entitle|abort|fail" \
-              build_unity.log | tail -n 100 || true
-            # et les 40 dernières lignes (la fin dit toujours pourquoi)
-            echo '== 40 dernières lignes du log Unity =='
-            tail -n 40 build_unity.log || true
+          if [ ! -d "$XCODE_DIR" ]; then
+            echo "ERREUR : le dossier $XCODE_DIR est ABSENT du repo."
+            echo "Regénère-le sur ton PC (Unity batchmode CiBuild.BuildIos)"
+            echo "puis pousse-le sur GitHub."
             exit 1
-          }
-          echo "== Fin de Unity : code $? =="
-          tail -n 25 build_unity.log | grep -E "CiBuild|error" || true
-          [ -d "$XCODE_DIR" ] || { echo "build_xcode ABSENT — Unity a échoué"; exit 1; }
+          fi
+          echo "== Contenu de $XCODE_DIR =="
+          ls "$XCODE_DIR" | head -20
+          [ -d "$XCODE_DIR/Unity-iPhone.xcodeproj" ] \
+            || { echo "ERREUR : Unity-iPhone.xcodeproj introuvable"; exit 1; }
+          # le schéma existe-t-il ? (Unity le génère normalement)
+          cd "$XCODE_DIR"
+          xcodebuild -list || true
+          SCHEME=$(xcodebuild -list 2>/dev/null | awk '/Targets:/{f=0} /Schemes:/{f=1;next} f{print $1; exit}')
+          if [ -z "$SCHEME" ]; then SCHEME="Unity-iPhone"; fi
+          echo "Schéma retenu : $SCHEME"
+          echo "$SCHEME" > /tmp/scheme.txt
 
       # --------------------------------------------------------------
-      # 4) xcodebuild : archive du projet Xcode → .xcarchive → .ipa
-      #    (signature : "development" — installable sur ton iPhone).
+      # 2) xcodebuild : compile l'app pour iPhone SANS signature
+      #    (CODE_SIGNING_ALLOWED=NO — aucun certificat Apple nécessaire,
+      #     la signature sera faite sur TON PC par Sideloadly/AltStore)
       # --------------------------------------------------------------
-      - name: "Archive Xcode → IPA"
+      - name: "Compiler l'app (sans signature)"
         script: |
           set -e
           cd "$XCODE_DIR"
-          xcodebuild -project Unity-iPhone.xcodeproj \
-            -scheme Unity-iPhone \
+          SCHEME=$(cat /tmp/scheme.txt)
+          # build "generic/platform=iOS" = appareil réel, pas le simulateur
+          xcodebuild \
+            -project Unity-iPhone.xcodeproj \
+            -scheme "$SCHEME" \
             -configuration Release \
-            -archivePath "$CM_BUILD_DIR/MatterRunner.xcarchive" \
-            archive
-          # options d'export (méthode développement = via Xcode/AltStore ou TestFlight)
-          cat > ExportOptions.plist <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key><string>development</string>
-            <key>destination</key><string>export</string>
-            <key>signingStyle</key><string>automatic</string>
-          </dict>
-          </plist>
-          PLIST
-          xcodebuild -exportArchive \
-            -archivePath "$CM_BUILD_DIR/MatterRunner.xcarchive" \
-            -exportOptionsPlist "$XCODE_DIR/ExportOptions.plist" \
-            -exportPath "$CM_BUILD_DIR/ipa" \
-            -allowProvisioningUpdates
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$CM_BUILD_DIR/derived" \
+            build || {
+            echo '=============================================='
+            echo '== xcodebuild a ÉCHOUÉ — dernières erreurs =='
+            echo '=============================================='
+            exit 1
+          }
+
+      # --------------------------------------------------------------
+      # 3) Packager l'app non signée en .ipa (structure Payload/). C'est
+      #    ce fichier qu'on glisse dans Sideloadly.
+      # --------------------------------------------------------------
+      - name: "Packager en .ipa"
+        script: |
+          set -e
+          APP=$(find "$CM_BUILD_DIR/derived/Build/Products" -maxdepth 2 \
+            -name "*.app" -type d | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "ERREUR : aucun .app produit !"
+            find "$CM_BUILD_DIR/derived/Build" -maxdepth 3 || true
+            exit 1
+          fi
+          echo "App : $APP"
+          # Unity signe parfois malgré tout avec "sign to distribute
+          # locally" : on retire toute signature pour rester cohérent
+          codesign --remove-signature "$APP" 2>/dev/null || true
+          mkdir -p "$CM_BUILD_DIR/ipa/Payload"
+          cp -R "$APP" "$CM_BUILD_DIR/ipa/Payload/"
+          cd "$CM_BUILD_DIR/ipa"
+          zip -qry "$CM_BUILD_DIR/MatterRunner-unsigned.ipa" Payload
+          echo "== IPA prête : MatterRunner-unsigned.ipa =="
+          ls -la "$CM_BUILD_DIR/MatterRunner-unsigned.ipa"
 
     # --------------------------------------------------------------
-    #  Ce que Codemagic te rend à la fin du build :
+    #  Ce que Codemagic rend à la fin du build :
     # --------------------------------------------------------------
     artifacts:
-      - ipa/*.ipa
-      - build_unity.log
-      # captures d'écran + HTML de la session d'activation (debug licence)
-      - licence/*.png
-      - licence/*.html
-      # le fichier de demande d'activation généré par le Mac (télécharge
-      # le pour l'activation MANUELLE du portail)
-      - licence/unity.alf
-      - licence/*.ulf
+      - "*.ipa"
 
     publishing: {}

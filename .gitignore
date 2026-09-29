@@ -1,10 +1,10 @@
-# ============================================
-#  .gitignore Unity — MatterRunner
-#  Tout ce qui est généré/éphémère ne part PAS sur GitHub.
-#  (le Mac distant de Codemagic regénère Library/Build lui-même)
+﻿# ============================================
+#  .gitignore Unity â€” MatterRunner
+#  Tout ce qui est gÃ©nÃ©rÃ©/Ã©phÃ©mÃ¨re ne part PAS sur GitHub.
+#  (le Mac distant de Codemagic regÃ©nÃ¨re Library/Build lui-mÃªme)
 # ============================================
 
-# Dossiers générés par Unity
+# Dossiers gÃ©nÃ©rÃ©s par Unity
 /[Ll]ibrary/
 /[Tt]emp/
 /[Oo]bj/
@@ -15,7 +15,6 @@
 /[Mm]emoryCaptures/
 
 # Sorties de build (produites sur le Mac de Codemagic)
-build_xcode/
 *.apk
 *.aab
 *.ipa
@@ -34,7 +33,7 @@ build_xcode/
 *.booproj
 *.svd
 
-# Crash / captures système
+# Crash / captures systÃ¨me
 *.sysinfo
 crashlytics-build.properties
 sysinfo.txt
