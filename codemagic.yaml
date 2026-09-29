@@ -227,8 +227,10 @@ workflows:
           fi
 
           # ---- VOIE 2 : activation AUTOMATIQUE du site Unity (Puppeteer) -----
-          # L'éditeur génère son fichier d'activation (.alf), puis l'outil
-          # game-ci clique lui-même sur license.unity3d.com et récupère le .ulf.
+          # L'éditeur génère son fichier d'activation (.alf), puis NOTRE
+          # script ci/activate_unity.js se connecte sur license.unity3d.com
+          # et récupère le .ulf tout seul (sélecteurs génériques + captures
+          # d'écran à chaque étape : ci-dessous, tout part dans les artefacts).
           if [ -n "$UNITY_EMAIL" ]; then
             echo "== Voie 2 : .alf + activation Puppeteer =="
             cd /tmp
@@ -236,33 +238,24 @@ workflows:
               -createManualActivationFile unity.alf || true
             ls -la /tmp/unity.alf 2>/dev/null \
               || echo "ATTENTION : pas de .alf généré !"
-            # Le Puppeteer embarqué par l'outil est trop vieux : son Chromium
-            # est X64 et refuse de se lancer sur le Mac M1 (spawn -88 =
-            # EBADEXEC). On force un puppeteer RÉCENT via un override npm,
-            # son Chromium sera ARM64 natif.
-            LIC_BIN=""
+            # Puppeteer récent : son Chromium est ARM64 natif (l'ancien outil
+            # embarquait un Chromium x64 qui refusait de se lancer sur M1).
             if mkdir -p /tmp/lic 2>/dev/null && cd /tmp/lic; then
-              if [ ! -x node_modules/.bin/unity-license-activate ]; then
+              if [ ! -d node_modules/puppeteer ]; then
                 npm init -y >/dev/null 2>&1 || true
-                npm pkg set overrides.puppeteer=">=23" >/dev/null 2>&1 || true
-                npm install --silent unity-license-activate \
-                  || echo "npm install direct a échoué, essai npx…"
+                npm install --silent puppeteer \
+                  || echo "npm install puppeteer a échoué"
               fi
-              if [ -x node_modules/.bin/unity-license-activate ]; then
-                LIC_BIN="/tmp/lic/node_modules/.bin/unity-license-activate"
+              cp "$CM_BUILD_DIR/ci/activate_unity.js" /tmp/lic/ || true
+              if [ -n "$UNITY_TOTP_KEY" ]; then
+                node activate_unity.js "$UNITY_EMAIL" "$UNITY_PASSWORD" \
+                  /tmp/unity.alf "$UNITY_TOTP_KEY" || true
               else
-                LIC_BIN="npx -y unity-license-activate"
+                node activate_unity.js "$UNITY_EMAIL" "$UNITY_PASSWORD" \
+                  /tmp/unity.alf || true
               fi
-            else
-              LIC_BIN="npx -y unity-license-activate"
             fi
-            if [ -n "$UNITY_TOTP_KEY" ]; then
-              $LIC_BIN "$UNITY_EMAIL" "$UNITY_PASSWORD" /tmp/unity.alf \
-                --authenticator-key "$UNITY_TOTP_KEY" || true
-            else
-              $LIC_BIN "$UNITY_EMAIL" "$UNITY_PASSWORD" /tmp/unity.alf || true
-            fi
-            ULF=$(find /tmp /Users -maxdepth 3 -iname '*.ulf' 2>/dev/null | head -n1)
+            ULF=$(find /tmp -maxdepth 3 -iname '*.ulf' 2>/dev/null | head -n1)
             if [ -n "$ULF" ]; then
               echo "ulf obtenu : $ULF"
               sudo mkdir -p "/Library/Application Support/Unity"
@@ -270,13 +263,17 @@ workflows:
               licence_ok && { echo "== Licence OK (voie 2 : Puppeteer) =="; exit 0; }
               echo "Voie 2 : ulf REFUSÉ par l'éditeur."
             else
-              echo "Voie 2 : AUCUN .ulf récupéré (2FA + code email possibles)."
+              echo "Voie 2 : AUCUN .ulf récupéré (voir captures 01-0*.png)."
             fi
           else
             echo "ERREUR : ni UNITY_LICENSE_B64 ni UNITY_EMAIL" && exit 1
           fi
 
           # ---- Échec complet : on affiche le pourquoi et on arrête ----------
+          # (les captures d'écran du navigateur d'activation partent aussi
+          #  dans les artefacts pour voir EXACTEMENT la page qui coince)
+          mkdir -p "$CM_BUILD_DIR/licence"
+          cp /tmp/lic/*.png /tmp/lic/*.html "$CM_BUILD_DIR/licence/" 2>/dev/null || true
           echo '================================================='
           echo "== AUCUNE LICENCE OBTENUE — log de vérification =="
           echo '================================================='
@@ -353,5 +350,8 @@ workflows:
     artifacts:
       - ipa/*.ipa
       - build_unity.log
+      # captures d'écran + HTML de la session d'activation (debug licence)
+      - licence/*.png
+      - licence/*.html
 
     publishing: {}
