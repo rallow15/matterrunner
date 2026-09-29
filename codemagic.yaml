@@ -35,6 +35,11 @@ workflows:
       - name: "Vérifier le projet Xcode"
         script: |
           set -e
+          # libiPhone-lib.a est stockée via Git LFS (>100 Mo, refusé par
+          # GitHub en Git classique) : on s'assure qu'elle est débloquée.
+          git lfs install || true
+          git lfs pull || true
+          ls -la "$XCODE_DIR/Libraries/" || true
           if [ ! -d "$XCODE_DIR" ]; then
             echo "ERREUR : le dossier $XCODE_DIR est ABSENT du repo."
             echo "Regénère-le sur ton PC (Unity batchmode CiBuild.BuildIos)"
