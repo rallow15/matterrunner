@@ -37,6 +37,13 @@ workflows:
           set -e
           git lfs install || true
           git lfs pull || true
+          # Windows (où le projet Xcode a été généré) ne stocke pas les
+          # permissions Unix : les scripts shell d'Unity (process_symbols.sh,
+          # validate-tbd.sh, usymtool…) perdent leur bit exécutable au
+          # commit. On le remet ici, sinon "Permission denied" en plein
+          # milieu du xcodebuild.
+          find "$XCODE_DIR" -type f \( -name "*.sh" -o -name "usymtool" \
+            -o -name "usymtoolarm64" \) -exec chmod +x {} +
           if [ ! -d "$XCODE_DIR/Unity-iPhone.xcodeproj" ]; then
             echo "ERREUR : $XCODE_DIR/Unity-iPhone.xcodeproj est ABSENT du repo."
             exit 1
@@ -67,9 +74,15 @@ workflows:
           COMMON_FLAGS="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=\"\""
           APP=""
 
+          check_app() {
+            find "$CM_BUILD_DIR/derived/Build/Products" \
+              -name "*.app" -type d | head -n 1
+          }
+
           # a) essai cible directe (le plus déterministe avec Unity :
           #    l'app target s'appelle Unity-iPhone, le produit MatterRunner)
-          if xcodebuild \
+          echo "== Tentative : cible directe Unity-iPhone =="
+          xcodebuild \
               -project Unity-iPhone.xcodeproj \
               -target Unity-iPhone \
               -configuration Release \
@@ -78,19 +91,15 @@ workflows:
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGN_IDENTITY="" \
               -derivedDataPath "$CM_BUILD_DIR/derived" \
-              build; then
-            APP=$(find "$CM_BUILD_DIR/derived/Build/Products" \
-              -name "*.app" -type d | head -n 1)
-            echo "Résultat de la cible directe : $APP"
-          else
-            echo "La cible directe a échoué — on essaie les schémas."
-          fi
+              build || echo "La cible directe n'a pas fini proprement."
+          APP=$(check_app)
+          [ -n "$APP" ] && echo "App trouvée après la cible directe : $APP"
 
           # b) si rien : on boucle sur les schémas réels du projet
           if [ -z "$APP" ]; then
             for s in $(cat /tmp/schemes.txt); do
               echo "== Build du schéma : $s =="
-              if xcodebuild \
+              xcodebuild \
                   -project Unity-iPhone.xcodeproj \
                   -scheme "$s" \
                   -configuration Release \
@@ -99,10 +108,11 @@ workflows:
                   CODE_SIGNING_REQUIRED=NO \
                   CODE_SIGN_IDENTITY="" \
                   -derivedDataPath "$CM_BUILD_DIR/derived" \
-                  build; then
-                APP=$(find "$CM_BUILD_DIR/derived/Build/Products" \
-                  -name "*.app" -type d | head -n 1)
-                [ -n "$APP" ] && { echo "App trouvée : $APP"; break; }
+                  build || echo "(schéma $s : sortie non nulle, on vérifie l'app)"
+              APP=$(check_app)
+              if [ -n "$APP" ]; then
+                echo "App trouvée via le schéma $s : $APP"
+                break
               fi
             done
           fi
