@@ -29,6 +29,11 @@ workflows:
     max_build_duration: 100
 
     environment:
+      # OBLIGATOIRE en mode yaml : demander explicitement le groupe de
+      # variables créé dans l'interface Codemagic (sinon UNITY_EMAIL /
+      # UNITY_PASSWORD restent invisibles du workflow !)
+      groups:
+        - default
       vars:
         UNITY_VERSION: "6000.3.25f1"
         XCODE_DIR: "build_xcode"
