@@ -191,9 +191,15 @@ workflows:
             sudo cp license.ulf "/Library/Application Support/Unity/Unity_lic.ulf"
             echo "Licence ulf posée."
           elif [ -n "$UNITY_EMAIL" ]; then
+            # on capture TOUT le log pour pouvoir vérifier le résultat
             "$UNITY_BIN" -batchmode -nographics -quit \
               -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" \
-              -logFile /dev/stdout | grep -i -E "licen|error" || true
+              -logFile /tmp/licence_unity.log || true
+            echo "== Extrait du log de licence =="
+            grep -iE "licen|entitle|success|error|deny|sign" \
+              /tmp/licence_unity.log | tail -n 40 || true
+            [ -f /Library/Application\ Support/Unity/Unity_lic.ulf ] \
+              && echo "Fichier ulf présent." || echo "Aucun ulf (Unity 6 : normal, format Entitlement)."
           else
             echo "ERREUR : UNITY_LICENSE_B64 ou UNITY_EMAIL manquant" && exit 1
           fi
@@ -215,7 +221,18 @@ workflows:
             -projectPath "$CM_BUILD_DIR" \
             -buildTarget iOS \
             -executeMethod MatterRunner.CiBuild.BuildIos \
-            -logFile build_unity.log
+            -logFile build_unity.log || {
+            echo '=============================================='
+            echo '== Unity a ÉCHOUÉ — cause dans le log : =='
+            echo '=============================================='
+            # tout ce qui ressemble à une erreur / licence / exception
+            grep -iE -B1 -A4 "error|exception|licen|entitle|abort|fail" \
+              build_unity.log | tail -n 100 || true
+            # et les 40 dernières lignes (la fin dit toujours pourquoi)
+            echo '== 40 dernières lignes du log Unity =='
+            tail -n 40 build_unity.log || true
+            exit 1
+          }
           echo "== Fin de Unity : code $? =="
           tail -n 25 build_unity.log | grep -E "CiBuild|error" || true
           [ -d "$XCODE_DIR" ] || { echo "build_xcode ABSENT — Unity a échoué"; exit 1; }
