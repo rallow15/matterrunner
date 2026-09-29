@@ -185,42 +185,85 @@ workflows:
             UNITY_INSTALL_PATH="$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
           fi
           UNITY_BIN="$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity"
+
+          # ---- vérification : Unity démarre-t-il avec une licence valide ? ---
+          licence_ok() {
+            "$UNITY_BIN" -quit -batchmode -nographics \
+              -projectPath "$CM_BUILD_DIR" \
+              -logFile /tmp/verif_licence.log 2>/dev/null || true
+            if grep -q "No valid Unity Editor license" /tmp/verif_licence.log; then
+              return 1
+            fi
+            return 0
+          }
+
+          # ---- VOIE 0 : ulf fournie en base64 par l'utilisateur --------------
           if [ -n "$UNITY_LICENSE_B64" ]; then
+            echo "== Voie 0 : ulf en base64 =="
             echo "$UNITY_LICENSE_B64" | base64 --decode > license.ulf
             sudo mkdir -p "/Library/Application Support/Unity"
             sudo cp license.ulf "/Library/Application Support/Unity/Unity_lic.ulf"
-            echo "Licence ulf posée."
-          elif [ -n "$UNITY_EMAIL" ]; then
-            # Étape A : login via le HUB en headless — c'est LÀ que la licence
-            # Personal est associée au compte (le Hub pose l'entitlement).
-            HUB="/Applications/Unity Hub.app/Contents/MacOS/Unity Hub"
-            [ -x "$HUB" ] || HUB="/Applications/UnityHub.app/Contents/MacOS/UnityHub"
-            if [ -x "$HUB" ]; then
-              echo "== Login Unity Hub (headless) =="
-              "$HUB" -- --headless login \
-                --username "$UNITY_EMAIL" \
-                --password "$UNITY_PASSWORD" \
-                || echo "[Hub] login headless refusé — on continue sans"
-            else
-              echo "Hub binaire introuvable — login Hub sauté."
-            fi
-
-            # Étape B : activation ÉDITEUR en licence utilisateur nominative.
-            # Doc Unity 6000.3 : -quit -batchmode -serial SANS valeur
-            # ("named user license, no serial key").
-            echo "== Activation éditeur (named-user) =="
-            "$UNITY_BIN" -quit -batchmode -nographics \
-              -serial \
-              -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" \
-              -logFile /tmp/licence_unity.log || true
-            echo "== Extrait du log de licence =="
-            grep -iE "licen|entitle|success|error|deny|sign|serial" \
-              /tmp/licence_unity.log | tail -n 40 || true
-            [ -f /Library/Application\ Support/Unity/Unity_lic.ulf ] \
-              && echo "Fichier ulf présent." || echo "Aucun ulf (Unity 6 : normal, format Entitlement)."
-          else
-            echo "ERREUR : UNITY_LICENSE_B64 ou UNITY_EMAIL manquant" && exit 1
+            licence_ok && { echo "== Licence OK (voie 0) =="; exit 0; }
+            echo "Voie 0 : ulf REFUSÉE par l'éditeur."
           fi
+
+          # ---- VOIE 1 : Unity Hub headless (voie OFFICIELLE du Personal) -----
+          HUB=""
+          for CANDIDATE in \
+              "/Applications/Unity Hub.app/Contents/MacOS/Unity Hub" \
+              "/Applications/UnityHub.app/Contents/MacOS/UnityHub"; do
+            if [ -x "$CANDIDATE" ]; then HUB="$CANDIDATE"; break; fi
+          done
+          if [ -n "$HUB" ] && [ -n "$UNITY_EMAIL" ]; then
+            echo "== Voie 1 : login Unity Hub headless =="
+            "$HUB" -- --headless login \
+              --username "$UNITY_EMAIL" \
+              --password "$UNITY_PASSWORD" \
+              || echo "  -> login Hub REFUSÉ (code $?), on continue"
+            licence_ok && { echo "== Licence OK (voie 1 : Hub) =="; exit 0; }
+            echo "Voie 1 : toujours pas de licence — on passe à la suivante."
+          elif [ -n "$UNITY_EMAIL" ]; then
+            echo "Voie 1 : Hub binaire introuvable — sautée."
+          fi
+
+          # ---- VOIE 2 : activation AUTOMATIQUE du site Unity (Puppeteer) -----
+          # L'éditeur génère son fichier d'activation (.alf), puis l'outil
+          # game-ci clique lui-même sur license.unity3d.com et récupère le .ulf.
+          if [ -n "$UNITY_EMAIL" ]; then
+            echo "== Voie 2 : .alf + activation Puppeteer =="
+            cd /tmp
+            "$UNITY_BIN" -quit -batchmode -nographics \
+              -createManualActivationFile unity.alf || true
+            ls -la /tmp/unity.alf 2>/dev/null \
+              || echo "ATTENTION : pas de .alf généré !"
+            if [ -n "$UNITY_TOTP_KEY" ]; then
+              npx -y unity-license-activate \
+                "$UNITY_EMAIL" "$UNITY_PASSWORD" /tmp/unity.alf \
+                --authenticator-key "$UNITY_TOTP_KEY" || true
+            else
+              npx -y unity-license-activate \
+                "$UNITY_EMAIL" "$UNITY_PASSWORD" /tmp/unity.alf || true
+            fi
+            ULF=$(ls -t /tmp/*.ulf /Users/*/*.ulf /Users/*/*/Desktop/*.ulf 2>/dev/null | head -n1)
+            if [ -n "$ULF" ]; then
+              echo "ulf obtenu : $ULF"
+              sudo mkdir -p "/Library/Application Support/Unity"
+              sudo cp "$ULF" "/Library/Application Support/Unity/Unity_lic.ulf"
+              licence_ok && { echo "== Licence OK (voie 2 : Puppeteer) =="; exit 0; }
+              echo "Voie 2 : ulf REFUSÉ par l'éditeur."
+            else
+              echo "Voie 2 : AUCUN .ulf récupéré (2FA + code email possibles)."
+            fi
+          else
+            echo "ERREUR : ni UNITY_LICENSE_B64 ni UNITY_EMAIL" && exit 1
+          fi
+
+          # ---- Échec complet : on affiche le pourquoi et on arrête ----------
+          echo '================================================='
+          echo "== AUCUNE LICENCE OBTENUE — log de vérification =="
+          echo '================================================='
+          grep -iE "licen|entitle|error|token" /tmp/verif_licence.log | tail -n 30 || true
+          exit 1
 
       # --------------------------------------------------------------
       # 3) Build Unity → PROJET XCODE (batchmode, sans fenêtre).
