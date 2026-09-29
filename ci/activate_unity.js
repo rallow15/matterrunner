@@ -268,30 +268,15 @@ async function main() {
             if (!clicked && tour === 9) break;
             continue;
           }
-          if (!(val || '').trim()) {
-            console.log('[INFO] Écran e-mail : saisie de l\'adresse …');
-            await page.click('input[type="email"], input[name="email"],' +
-              ' input[id="user_email"], input[name="username"], input[id="Username"]');
-          }
-          await page.keyboard.press('Escape').catch(() => {});
-          await sleep(300);
-          const filled = await page.evaluate((e) => {
-            const f = document.querySelector(
-              'input[type="email"], input[name="email"], input[id="user_email"],' +
-              ' input[name="username"], input[id="Username"]');
-            if (!f || f.value) return false;
-            // injection directe (les portails React ignorent parfois typing)
-            const proto = Object.getPrototypeOf(f);
-            const desc = Object.getOwnPropertyDescriptor(proto, 'value')
-              || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-            try { f.value = e; desc && desc.set && desc.set.call(f, e); return true; }
-            catch (_) { f.value = e; return true; }
-          }, email);
-          if (!filled) {
-            await page.type('input[type="email"], input[name="email"],' +
-              ' input[id="user_email"], input[name="username"], input[id="Username"]',
-              email, { delay: 25 });
-          }
+          console.log('[INFO] Écran e-mail : saisie de l\'adresse …');
+          // le portail login.unity.com est une app React : le champ doit
+          // recevoir de VRAIS événements clavier (onChange), on ne peut
+          // pas injecter la valeur en JS (sinon « Invalid email » au clic)
+          await page.click('input[type="email"], input[name="email"],' +
+            ' input[id="user_email"], input[name="username"], input[id="Username"]');
+          await page.type('input[type="email"], input[name="email"],' +
+            ' input[id="user_email"], input[name="username"], input[id="Username"]',
+            email, { delay: 25 });
           await sleep(500);
           await shot(page, '03-identifiants-remplis.png');
           // le bouton peut être « Next », « Continue », ou input commit
