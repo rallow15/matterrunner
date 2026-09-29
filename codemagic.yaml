@@ -191,12 +191,30 @@ workflows:
             sudo cp license.ulf "/Library/Application Support/Unity/Unity_lic.ulf"
             echo "Licence ulf posée."
           elif [ -n "$UNITY_EMAIL" ]; then
-            # on capture TOUT le log pour pouvoir vérifier le résultat
-            "$UNITY_BIN" -batchmode -nographics -quit \
+            # Étape A : login via le HUB en headless — c'est LÀ que la licence
+            # Personal est associée au compte (le Hub pose l'entitlement).
+            HUB="/Applications/Unity Hub.app/Contents/MacOS/Unity Hub"
+            [ -x "$HUB" ] || HUB="/Applications/UnityHub.app/Contents/MacOS/UnityHub"
+            if [ -x "$HUB" ]; then
+              echo "== Login Unity Hub (headless) =="
+              "$HUB" -- --headless login \
+                --username "$UNITY_EMAIL" \
+                --password "$UNITY_PASSWORD" \
+                || echo "[Hub] login headless refusé — on continue sans"
+            else
+              echo "Hub binaire introuvable — login Hub sauté."
+            fi
+
+            # Étape B : activation ÉDITEUR en licence utilisateur nominative.
+            # Doc Unity 6000.3 : -quit -batchmode -serial SANS valeur
+            # ("named user license, no serial key").
+            echo "== Activation éditeur (named-user) =="
+            "$UNITY_BIN" -quit -batchmode -nographics \
+              -serial \
               -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" \
               -logFile /tmp/licence_unity.log || true
             echo "== Extrait du log de licence =="
-            grep -iE "licen|entitle|success|error|deny|sign" \
+            grep -iE "licen|entitle|success|error|deny|sign|serial" \
               /tmp/licence_unity.log | tail -n 40 || true
             [ -f /Library/Application\ Support/Unity/Unity_lic.ulf ] \
               && echo "Fichier ulf présent." || echo "Aucun ulf (Unity 6 : normal, format Entitlement)."
