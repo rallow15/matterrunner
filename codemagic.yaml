@@ -238,6 +238,12 @@ workflows:
               -createManualActivationFile unity.alf || true
             ls -la /tmp/unity.alf 2>/dev/null \
               || echo "ATTENTION : pas de .alf généré !"
+            # on publie le .alf dans les artefacts : il permet l'activation
+            # MANUELLE du port license.unity3d.com (voire un autre PC)
+            mkdir -p "$CM_BUILD_DIR/licence"
+            cp /tmp/unity.alf "$CM_BUILD_DIR/licence/unity.alf" 2>/dev/null || true
+            # et on garde une trace du ulf obtenu (réactivation plus vite)
+            cp /tmp/lic/*.ulf "$CM_BUILD_DIR/licence/" 2>/dev/null || true
             # Puppeteer récent : son Chromium est ARM64 natif (l'ancien outil
             # embarquait un Chromium x64 qui refusait de se lancer sur M1).
             if mkdir -p /tmp/lic 2>/dev/null && cd /tmp/lic; then
@@ -353,5 +359,9 @@ workflows:
       # captures d'écran + HTML de la session d'activation (debug licence)
       - licence/*.png
       - licence/*.html
+      # le fichier de demande d'activation généré par le Mac (télécharge
+      # le pour l'activation MANUELLE du portail)
+      - licence/unity.alf
+      - licence/*.ulf
 
     publishing: {}
