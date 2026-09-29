@@ -27,6 +27,41 @@ namespace MatterRunner
         /// <summary>La scène d'entrée du jeu (montée par MatterRunnerSceneSetup).</summary>
         private const string MainScene = "Assets/Scenes/MatterRunner.unity";
 
+        /// <summary>Dossier de sortie du test sur PC (git-ignoré).</summary>
+        private const string WindowsDir = "build_windows";
+
+        [MenuItem("MatterRunner/Build Windows (test PC)")]
+        public static void BuildWindows()
+        {
+            try
+            {
+                DoWindowsBuild();
+                EditorApplication.Exit(0);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[CiBuild] ÉCHEC du build Windows : {e.Message}");
+                EditorApplication.Exit(1);
+            }
+        }
+
+        private static void DoWindowsBuild()
+        {
+            // Build autonome Windows 64 bits : on obtient un double
+            // MatterRunner.exe jouable SANS installer quoi que ce soit.
+            Debug.Log("[CiBuild] Build Windows démarré…");
+            var options = new BuildPlayerOptions
+            {
+                scenes = new[] { MainScene },
+                locationPathName = WindowsDir + "/MatterRunner.exe",
+                target = BuildTarget.StandaloneWindows64
+            };
+            BuildReport report = BuildPipeline.BuildPlayer(options);
+            if (report.summary.result != BuildResult.Succeeded)
+                throw new Exception($"BuildPlayer (Windows) a échoué : {report.summary.result} — {report.summary.totalErrors} erreur(s).");
+            Debug.Log($"[CiBuild] Exe OK : {WindowsDir}/MatterRunner.exe ({report.summary.totalSize / (1024 * 1024)} Mo).");
+        }
+
         [MenuItem("MatterRunner/Build iOS (local, pour test)")]
         public static void BuildIos()
         {

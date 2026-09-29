@@ -45,3 +45,5 @@ Desktop.ini
 
 # log de build local Unity (batchmode)
 build_local.log
+
+build_windows/
