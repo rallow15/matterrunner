@@ -1,0 +1,127 @@
+# =====================================================================
+#  codemagic.yaml — MatterRunner : build iOS ENTIEREMENT automatisé
+#  sur les Mac de Codemagic (lancable depuis Windows, rien à installer
+#  chez toi). Déclencheur : démarre le workflow depuis l'onglet Builds
+#  de Codemagic (ou chaque push si tu actives "Trigger builds").
+#
+#  PRÉ-REQUIS à renseigner UNE FOIS dans Codemagic → App settings →
+#  Environment variables (marquer ces variables Sécurisées) :
+#     UNITY_EMAIL     : ton email Unity ID  (chemin licence n°1)
+#     UNITY_PASSWORD  : ton mot de passe Unity ID
+#  OU si tu préfères la licence par fichier :
+#     UNITY_LICENSE_B64 : le contenu de Unity_lic.ulf encodé base64
+#     MR_BUNDLE_ID      : ex. com.salim.matterrunner
+# =====================================================================
+
+workflows:
+  matterrunner-ios:
+    name: "MatterRunner — build iOS"
+    instance_type: "mac_mini_m1"
+    max_build_duration: 100
+
+    environment:
+      vars:
+        UNITY_VERSION: "6000.3.25f1"
+        UNITY_INSTALL_PATH: "$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
+        XCODE_DIR: "build_xcode"
+        MR_BUNDLE_ID: "com.matterrunner.app"
+
+    scripts:
+      # --------------------------------------------------------------
+      # 1) Installer EXACTEMENT la même version de Unity que chez toi
+      #    (sinon Unity refuse d'ouvrir le projet ou migre tout).
+      # --------------------------------------------------------------
+      - name: "Installer Unity $UNITY_VERSION (module iOS)"
+        script: |
+          set -e
+          HUB="/Applications/Unity/Hub/Editor/UnityHub.app/Contents/MacOS/UnityHub"
+          if [ ! -d "$UNITY_INSTALL_PATH" ]; then
+            brew install --cask unity-hub || true
+            xattr -d com.apple.quarantine /Applications/Unity/Hub/Editor/UnityHub.app 2>/dev/null || true
+            "$HUB" -- --headless install \
+              --version "$UNITY_VERSION" \
+              --change-installpath "$HOME/Library/Application Support/Unity/Hub/Editor" \
+              --module ios
+          else
+            echo "Unity $UNITY_VERSION déjà installé (cache du runner)."
+          fi
+          echo "$UNITY_VERSION" > "$CM_BUILD_DIR/.unity-version"
+
+      # --------------------------------------------------------------
+      # 2) Activer la LICENCE Unity (Personal) sur le Mac distant.
+      #    Voie A : ulf fournie en base64 (UNITY_LICENSE_B64).
+      #    Voie B : login Unity ID (UNITY_EMAIL / UNITY_PASSWORD).
+      # --------------------------------------------------------------
+      - name: "Activer la licence Unity"
+        script: |
+          set -e
+          UNITY_BIN="$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity"
+          if [ -n "$UNITY_LICENSE_B64" ]; then
+            echo "$UNITY_LICENSE_B64" | base64 --decode > license.ulf
+            sudo mkdir -p "/Library/Application Support/Unity"
+            sudo cp license.ulf "/Library/Application Support/Unity/Unity_lic.ulf"
+            echo "Licence ulf posée."
+          elif [ -n "$UNITY_EMAIL" ]; then
+            "$UNITY_BIN" -batchmode -nographics -quit \
+              -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" \
+              -logFile /dev/stdout | grep -i -E "licen|error" || true
+          else
+            echo "ERREUR : UNITY_LICENSE_B64 ou UNITY_EMAIL manquant" && exit 1
+          fi
+
+      # --------------------------------------------------------------
+      # 3) Build Unity → PROJET XCODE (batchmode, sans fenêtre).
+      #    CiBuild.cs s'occupe des réglages iOS + du code de sortie.
+      # --------------------------------------------------------------
+      - name: "Unity batchmode → projet Xcode"
+        script: |
+          set -e
+          UNITY_BIN="$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity"
+          "$UNITY_BIN" -batchmode -nographics -quit \
+            -projectPath "$CM_BUILD_DIR" \
+            -buildTarget iOS \
+            -executeMethod MatterRunner.CiBuild.BuildIos \
+            -logFile build_unity.log
+          echo "== Fin de Unity : code $? =="
+          tail -n 25 build_unity.log | grep -E "CiBuild|error" || true
+          [ -d "$XCODE_DIR" ] || { echo "build_xcode ABSENT — Unity a échoué"; exit 1; }
+
+      # --------------------------------------------------------------
+      # 4) xcodebuild : archive du projet Xcode → .xcarchive → .ipa
+      #    (signature : "development" — installable sur ton iPhone).
+      # --------------------------------------------------------------
+      - name: "Archive Xcode → IPA"
+        script: |
+          set -e
+          cd "$XCODE_DIR"
+          xcodebuild -project Unity-iPhone.xcodeproj \
+            -scheme Unity-iPhone \
+            -configuration Release \
+            -archivePath "$CM_BUILD_DIR/MatterRunner.xcarchive" \
+            archive
+          # options d'export (méthode développement = via Xcode/AltStore ou TestFlight)
+          cat > ExportOptions.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>development</string>
+            <key>destination</key><string>export</string>
+            <key>signingStyle</key><string>automatic</string>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$CM_BUILD_DIR/MatterRunner.xcarchive" \
+            -exportOptionsPlist "$XCODE_DIR/ExportOptions.plist" \
+            -exportPath "$CM_BUILD_DIR/ipa" \
+            -allowProvisioningUpdates
+
+    # --------------------------------------------------------------
+    #  Ce que Codemagic te rend à la fin du build :
+    # --------------------------------------------------------------
+    artifacts:
+      - ipa/*.ipa
+      - build_unity.log
+
+    publishing: {}
