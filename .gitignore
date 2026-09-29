@@ -42,3 +42,6 @@ sysinfo.txt
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# log de build local Unity (batchmode)
+build_local.log

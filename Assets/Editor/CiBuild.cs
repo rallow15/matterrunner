@@ -52,16 +52,18 @@ namespace MatterRunner
             Debug.Log($"[CiBuild] Bundle ID = {bundleId}");
 
             // 2) Orientation : portrait, comme le jeu (runner vertical).
-            PlayerSettings.iOS.defaultInterfaceOrientation = UIOrientation.Portrait;
-            PlayerSettings.iOS.statusBarHidden = true;
+            //    (Dans Unity 6, ces réglages sont passés sur PlayerSettings.)
+            PlayerSettings.defaultInterfaceOrientation = UIOrientation.Portrait;
+            PlayerSettings.statusBarHidden = true;
 
             // 3) La liste des scènes : la scène principale suffit.
             var options = new BuildPlayerOptions
             {
                 scenes = new[] { MainScene },
                 locationPathName = XcodeDir,
-                target = BuildTarget.iOS,
-                options = BuildOptions.AcceptExternalModifications
+                target = BuildTarget.iOS
+                // NB : BuildOptions.AcceptExternalModifications n'existe plus
+                // dans Unity 6 — le projet Xcode est régénéré proprement.
             };
 
             Debug.Log("[CiBuild] Build iOS démarré (projet Xcode)…");
