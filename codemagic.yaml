@@ -20,9 +20,14 @@ workflows:
     max_build_duration: 100
 
     environment:
+      # Mise en cache de l'éditeur Unity : 3.5 Go ne sont PAS retéléchargés
+      # à chaque build une fois le premier build réussi.
+      cache:
+        cache_paths:
+          - "~/Library/Application Support/Unity/Hub/Editor"
+          - "/Applications/Unity/Hub/Editor"
       vars:
         UNITY_VERSION: "6000.3.25f1"
-        UNITY_INSTALL_PATH: "$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
         XCODE_DIR: "build_xcode"
         MR_BUNDLE_ID: "com.matterrunner.app"
 
@@ -34,6 +39,14 @@ workflows:
       - name: "Installer Unity $UNITY_VERSION (module iOS)"
         script: |
           set -e
+
+          # NOTE : Unity Hub peut s'installer à l'un des DEUX emplacements
+          # (c'est varier selon la version du Hub) — on détecte le vrai :
+          UNITY_INSTALL_PATH="/Applications/Unity/Hub/Editor/$UNITY_VERSION"
+          if [ ! -d "$UNITY_INSTALL_PATH" ] && \
+             [ -d "$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION" ]; then
+            UNITY_INSTALL_PATH="$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
+          fi
 
           # --- Plan B : téléchargement DIRECT des tarballs officiels Unity
           #     (au cas où Unity Hub refuse de coopérer) -------------------
@@ -139,7 +152,7 @@ workflows:
           elif [ -n "$HUB" ]; then
             "$HUB" -- --headless install \
               --version "$UNITY_VERSION" \
-              --change-installpath "$HOME/Library/Application Support/Unity/Hub/Editor" \
+              --change-installpath "$(dirname "$UNITY_INSTALL_PATH")" \
               --module ios \
               --childModules \
             || install_direct
@@ -158,6 +171,11 @@ workflows:
       - name: "Activer la licence Unity"
         script: |
           set -e
+          # détecte le binaire Unity (les 2 emplacements possibles)
+          UNITY_INSTALL_PATH="/Applications/Unity/Hub/Editor/$UNITY_VERSION"
+          if [ ! -d "$UNITY_INSTALL_PATH" ]; then
+            UNITY_INSTALL_PATH="$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
+          fi
           UNITY_BIN="$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity"
           if [ -n "$UNITY_LICENSE_B64" ]; then
             echo "$UNITY_LICENSE_B64" | base64 --decode > license.ulf
@@ -179,6 +197,11 @@ workflows:
       - name: "Unity batchmode → projet Xcode"
         script: |
           set -e
+          # détecte le binaire Unity (les 2 emplacements possibles)
+          UNITY_INSTALL_PATH="/Applications/Unity/Hub/Editor/$UNITY_VERSION"
+          if [ ! -d "$UNITY_INSTALL_PATH" ]; then
+            UNITY_INSTALL_PATH="$HOME/Library/Application Support/Unity/Hub/Editor/$UNITY_VERSION"
+          fi
           UNITY_BIN="$UNITY_INSTALL_PATH/Unity.app/Contents/MacOS/Unity"
           "$UNITY_BIN" -batchmode -nographics -quit \
             -projectPath "$CM_BUILD_DIR" \
